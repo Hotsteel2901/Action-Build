@@ -93,6 +93,17 @@ on:
         description: "动态清单仓库所有者//Manifest repository owner"
         required: true
         default: "Numbersf"
+      ACE3PRO_PIN:
+        type: choice
+        description: "Ace 3 Pro(PJX110)内核源码锚定版本//Pin Ace 3 Pro(PJX110) kernel source snapshot"
+        required: false
+        default: "16.0.5.701"
+        options:
+          - "16.0.5.701"
+          - "16.0.5.1001"
+          - "16.0.3.501"
+          - "16.0.1.301"
+          - "latest"
       BUILD_TIME:
         type: string
         description: "自定义构建时间(输入F使用UTCT或-1关闭)//Custom build time (Enter F to use UTCT, or -1 to disable)"
@@ -464,6 +475,31 @@ jobs:
           echo "使用$MANIFEST_REPO/$MANIFEST_REPO_NAME($MANIFEST_BRANCH)初始化仓库..."
           repo init -u "$BASE_URL" -b "$MANIFEST_BRANCH" -m "${FILE}.xml" --depth=1 --no-clone-bundle --no-tags
           sed -i -e '/prebuilts\/asuite"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' -e '/tools\/tradefederation\/prebuilts"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' ".repo/manifests/${FILE}.xml"
+          # ===== Ace 3 Pro(PJX110) 源码锚定 =====
+          # OnePlusOSS 的 sm8650 分支是浮动分支（每次固件发布会强推），
+          # 源码比手机固件新时，内核与设备上的 vendor_dlkm/dtbo 对不上，会开机即 panic 无限重启。
+          # 这里把三仓 revision 改写成固定 commit，结构仍跟随上游清单。
+          PIN_TABLE="$GITHUB_WORKSPACE/pins/ace3_pro.tsv"
+          PIN_LABEL="${{ github.event.inputs.ACE3PRO_PIN }}"
+          if [[ -f "$PIN_TABLE" && "$PIN_LABEL" != "latest" ]]; then
+            PIN_ROW=$(awk -F'\t' -v f="$FILE" -v v="$PIN_LABEL" '!/^[[:space:]]*#/ && NF>=5 && $1==f && $2==v {print $3" "$4" "$5; exit}' "$PIN_TABLE")
+            if [[ -n "$PIN_ROW" ]]; then
+              read -r PIN_COMMON PIN_MSM PIN_DT <<< "$PIN_ROW"
+              python3 "$GITHUB_WORKSPACE/pins/pin_manifest.py" ".repo/manifests/${FILE}.xml" "$PIN_COMMON" "$PIN_MSM" "$PIN_DT" || { echo "❌ 源码锚定失败"; exit 14; }
+              {
+                echo "PIN_LABEL=$PIN_LABEL"
+                echo "PIN_COMMON=$PIN_COMMON"
+                echo "PIN_MSM=$PIN_MSM"
+                echo "PIN_DT=$PIN_DT"
+              } >> "$GITHUB_ENV"
+              echo "📌 $FILE 源码已锚定到 $PIN_LABEL："
+              echo "   common=${PIN_COMMON:0:12} msm=${PIN_MSM:0:12} devicetree=${PIN_DT:0:12}"
+            else
+              echo "⚠️ pins/ace3_pro.tsv 里没有 $FILE @ $PIN_LABEL 的记录，跳过锚定"
+            fi
+          elif [[ "$PIN_LABEL" == "latest" ]]; then
+            echo "📌 ACE3PRO_PIN=latest：跟随上游浮动分支（不锚定）"
+          fi
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync
 
           KERNEL_REPOS=""
@@ -493,6 +529,39 @@ jobs:
             sed -i 's/check_defconfig = None,/check_defconfig = "disabled",/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
             sed -i 's/if check_defconfig == None:/if False:  # check_defconfig == None:/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
           fi
+
+      - name: Verify Ace 3 Pro Pin
+        if: ${{ startsWith(github.event.inputs.FILE, 'oneplus_ace3_pro') }}
+        run: |
+          cd kernel_workspace
+          if [[ -z "${PIN_COMMON:-}" ]]; then
+            echo "📌 本次未启用源码锚定，跳过校验"
+            exit 0
+          fi
+          failed=0
+          verify_pin() {
+            local dir="$1" want="$2" label="$3" cur=""
+            if [[ ! -e "$dir/.git" ]]; then
+              echo "⚠️ $label: 没有 $dir/.git，跳过"
+              return 0
+            fi
+            cur=$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)
+            if [[ "$cur" == "$want" ]]; then
+              echo "✅ $label 锚定生效: ${cur:0:12}"
+              return 0
+            fi
+            echo "⚠️ $label 实际 ${cur:0:12} ≠ 期望 ${want:0:12}，强制切回"
+            if git -C "$dir" fetch --depth=1 origin "$want" >/dev/null 2>&1 && git -C "$dir" checkout -f "$want" >/dev/null 2>&1; then
+              echo "✅ $label 已切回 ${want:0:12}"
+            else
+              echo "❌ $label 切回失败（$want）"
+              failed=1
+            fi
+          }
+          verify_pin "kernel_platform/common" "$PIN_COMMON" "common"
+          verify_pin "kernel_platform/msm-kernel" "$PIN_MSM" "msm-kernel"
+          verify_pin "." "$PIN_DT" "modules_and_devicetree"
+          exit $failed
 
       - name: Kernel Version Handling
         run: |
