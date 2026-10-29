@@ -479,29 +479,80 @@ jobs:
           repo init -u "$BASE_URL" -b "$MANIFEST_BRANCH" -m "${FILE}.xml" --depth=1 --no-clone-bundle --no-tags
           sed -i -e '/prebuilts\/asuite"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' -e '/tools\/tradefederation\/prebuilts"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' ".repo/manifests/${FILE}.xml"
           # ===== Ace 3 Pro(PJX110) 源码锚定 =====
-          # OnePlusOSS 的 sm8650 分支是浮动分支（每次固件发布会强推），
-          # 源码比手机固件新时，内核与设备上的 vendor_dlkm/dtbo 对不上，会开机即 panic 无限重启。
-          # 这里把三仓 revision 改写成固定 commit，结构仍跟随上游清单。
-          PIN_TABLE="$GITHUB_WORKSPACE/pins/ace3_pro.tsv"
-          PIN_LABEL="${{ github.event.inputs.ACE3PRO_PIN }}"
-          if [[ -f "$PIN_TABLE" && "$PIN_LABEL" != "latest" ]]; then
-            PIN_ROW=$(awk -F'\t' -v f="$FILE" -v v="$PIN_LABEL" '!/^[[:space:]]*#/ && NF>=5 && $1==f && $2==v {print $3" "$4" "$5; exit}' "$PIN_TABLE")
-            if [[ -n "$PIN_ROW" ]]; then
-              read -r PIN_COMMON PIN_MSM PIN_DT <<< "$PIN_ROW"
-              python3 "$GITHUB_WORKSPACE/pins/pin_manifest.py" ".repo/manifests/${FILE}.xml" "$PIN_COMMON" "$PIN_MSM" "$PIN_DT" || { echo "❌ 源码锚定失败"; exit 14; }
-              {
-                echo "PIN_LABEL=$PIN_LABEL"
-                echo "PIN_COMMON=$PIN_COMMON"
-                echo "PIN_MSM=$PIN_MSM"
-                echo "PIN_DT=$PIN_DT"
-              } >> "$GITHUB_ENV"
-              echo "📌 $FILE 源码已锚定到 $PIN_LABEL："
-              echo "   common=${PIN_COMMON:0:12} msm=${PIN_MSM:0:12} devicetree=${PIN_DT:0:12}"
-            else
-              echo "⚠️ pins/ace3_pro.tsv 里没有 $FILE @ $PIN_LABEL 的记录，跳过锚定"
-            fi
-          elif [[ "$PIN_LABEL" == "latest" ]]; then
+          # OnePlusOSS 的 sm8650 分支是浮动分支（每次固件发布会强推分支头），
+          # 源码比手机固件新时，内核与设备上的 dtbo/vendor_dlkm 对不上，会开机即 panic。
+          # 注意：maximize-build-space 会把 $GITHUB_WORKSPACE 整个挂到新的 LVM 卷上，
+          # checkout 出来的 pins/ 在挂载后不可见，所以锚定数据必须内联在这里。
+          PIN_LABEL="${PIN_LABEL:-16.0.5.701}"
+          if [ "$PIN_LABEL" = "latest" ]; then
             echo "📌 ACE3PRO_PIN=latest：跟随上游浮动分支（不锚定）"
+          elif [ "$FILE" != "oneplus_ace3_pro_b" ]; then
+            echo "ℹ️ $FILE 不是 Ace 3 Pro，跳过锚定"
+          else
+            PIN_ROW=$(awk -F'|' -v f="$FILE" -v v="$PIN_LABEL" '$1==f && $2==v {print $3" "$4" "$5; exit}' <<'PINEOF'
+          oneplus_ace3_pro_b|16.0.5.701|ec062d02a5cf7ca54774688e5e8c2173384821e9|5e045379355ef8fe46fb42d7a7678a944619d703|ea5a605692c5955a77eee8e9e1ca6ad548a3b388
+          oneplus_ace3_pro_b|16.0.5.1001|5c8c927af4bd98f35e4d0bfd5a2d1fdba30f3b56|3ce62e9b9534b4cac64300b91a7ead2b0deda495|a7ab73a78d71452a1f3bd4c04e2f8aa9ea4ea014
+          oneplus_ace3_pro_b|16.0.3.501|5e3b484617a534fe20ef328066b989c749c28a06|28dfd4250f8140c53abaef3abd37cb018f7b2b4c|c1668441c735a9d259be38625389fec44c689502
+          oneplus_ace3_pro_b|16.0.1.301|42dabfb17471c1cec48892fe955d6c1727409bc1|17bbd4191841ae360c4cd3dc6020454f6f414b03|7c994299927423bdfdcda2b73af8705499d26bfb
+          PINEOF
+          )
+            if [ -z "$PIN_ROW" ]; then
+              echo "❌ pins 表里没有 $FILE @ $PIN_LABEL"
+              echo "   可选: 16.0.5.701 / 16.0.5.1001 / 16.0.3.501 / 16.0.1.301 / latest"
+              exit 15
+            fi
+            read -r PIN_COMMON PIN_MSM PIN_DT <<< "$PIN_ROW"
+            python3 - ".repo/manifests/${FILE}.xml" "$PIN_COMMON" "$PIN_MSM" "$PIN_DT" <<'PYEOF' || { echo "❌ 源码锚定失败"; exit 14; }
+          import re
+          import sys
+
+          TARGETS = (
+              ("android_kernel_common_oneplus_sm8650", "common", 0),
+              ("android_kernel_oneplus_sm8650", "msm-kernel", 1),
+              ("android_kernel_modules_and_devicetree_oneplus_sm8650", "devicetree", 2),
+          )
+
+
+          def replace_once(text, name, sha):
+              pattern = re.compile(
+                  r'(<project\b[^>]*\bname="' + re.escape(name) + r'"[^>]*\brevision=")([^"]*)(")'
+              )
+              text, count = pattern.subn(lambda m: m.group(1) + sha + m.group(3), text, count=1)
+              if count:
+                  return text, count
+              pattern = re.compile(
+                  r'(<project\b[^>]*\brevision=")([^"]*)("[^>]*\bname="' + re.escape(name) + r'")'
+              )
+              return pattern.subn(lambda m: m.group(1) + sha + m.group(3), text, count=1)
+
+
+          def main():
+              path, common_sha, msm_sha, dt_sha = sys.argv[1:5]
+              shas = [common_sha, msm_sha, dt_sha]
+              text = open(path, encoding="utf-8").read()
+              missing = []
+              for name, label, idx in TARGETS:
+                  text, count = replace_once(text, name, shas[idx])
+                  print("  [%s] %s -> %s (matched=%d)" % (label, name, shas[idx][:12], count))
+                  if count != 1:
+                      missing.append(name)
+              if missing:
+                  print("ERROR: 以下 project 没能锚定: " + ", ".join(missing))
+                  return 2
+              open(path, "w", encoding="utf-8").write(text)
+              return 0
+
+
+          raise SystemExit(main())
+          PYEOF
+            {
+              echo "PIN_LABEL=$PIN_LABEL"
+              echo "PIN_COMMON=$PIN_COMMON"
+              echo "PIN_MSM=$PIN_MSM"
+              echo "PIN_DT=$PIN_DT"
+            } >> "$GITHUB_ENV"
+            echo "📌 $FILE 源码已锚定到 $PIN_LABEL："
+            echo "   common=${PIN_COMMON:0:12} msm=${PIN_MSM:0:12} devicetree=${PIN_DT:0:12}"
           fi
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync
 
@@ -537,9 +588,15 @@ jobs:
         if: ${{ startsWith(github.event.inputs.FILE, 'oneplus_ace3_pro') }}
         run: |
           cd kernel_workspace
-          if [[ -z "${PIN_COMMON:-}" ]]; then
+          EXPECT_LABEL="${{ github.event.inputs.ACE3PRO_PIN }}"
+          EXPECT_LABEL="${EXPECT_LABEL:-16.0.5.701}"
+          if [ "$EXPECT_LABEL" = "latest" ] || [ "$FILE" != "oneplus_ace3_pro_b" ]; then
             echo "📌 本次未启用源码锚定，跳过校验"
             exit 0
+          fi
+          if [ -z "${PIN_COMMON:-}" ]; then
+            echo "❌ Ace 3 Pro 需要锚定到 $EXPECT_LABEL，但 PIN_COMMON 为空（锚定步骤未生效）"
+            exit 16
           fi
           failed=0
           verify_pin() {
