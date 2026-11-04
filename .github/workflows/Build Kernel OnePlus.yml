@@ -174,6 +174,11 @@ on:
         description: "是否添加轻量级Linux容器支持(DroidSpaces)？//Add lightweight Linux container support (DroidSpaces)?"
         required: true
         default: false
+      DS_LIMITS:
+        type: boolean
+        description: "DroidSpaces 资源限制(CONFIG_CFS_BANDWIDTH / CONFIG_CGROUP_PIDS，即 --cpus / --pids-limit)。会改 kABI，必须同时刷重编的 vendor 模块，否则开机重启//DroidSpaces CPU/PID limits; changes kABI, requires rebuilt vendor modules or the device bootloops"
+        required: false
+        default: false
       RE_KERNEL:
         type: boolean
         description: "是否添加Re-Kernel？//Add Re-Kernel?"
@@ -225,7 +230,32 @@ jobs:
           git config --global user.name "Numbersf"
           git config --global user.email "263623064@qq.com"
           mkdir kernel_workspace && cd kernel_workspace
-          git clone https://github.com/Numbersf/Action-Build.git -b KernelSU-Next
+
+          UPSTREAM_REPO="Numbersf/Action-Build"
+          UPSTREAM_BRANCH="KernelSU-Next"
+          SELF_REPO="${{ github.repository }}"
+          SELF_BRANCH="${{ github.ref_name }}"
+
+          USE_REPO="$UPSTREAM_REPO"
+          USE_BRANCH="$UPSTREAM_BRANCH"
+
+          if [ "${SELF_REPO,,}" != "${UPSTREAM_REPO,,}" ]; then
+            git clone --filter=blob:none --no-checkout "https://github.com/${SELF_REPO}.git" -b "$SELF_BRANCH" probe
+            cd probe
+            git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+            git fetch --filter=blob:none upstream "$UPSTREAM_BRANCH"
+
+            AHEAD=$(git rev-list --no-merges --count "upstream/${UPSTREAM_BRANCH}..HEAD")
+            echo "fork 独有的非 Merge 提交数: $AHEAD"
+
+            if [ "$AHEAD" -gt 0 ]; then
+              USE_REPO="$SELF_REPO"
+              USE_BRANCH="$SELF_BRANCH"
+            fi
+            cd .. && rm -rf probe
+          fi
+          echo "使用仓库: $USE_REPO @ $USE_BRANCH"
+          git clone "https://github.com/${USE_REPO}.git" -b "$USE_BRANCH" Action-Build
 
       - name: Extract Manifest Info
         id: extract_info
@@ -362,6 +392,7 @@ jobs:
           echo "Selected SCHED_HMBIRD: ${{ github.event.inputs.SCHED_HMBIRD }}"
           echo "Selected UNICODE_BYPASS: ${{ github.event.inputs.UNICODE_BYPASS }}"
           echo "Selected DROID_SPACES: ${{ github.event.inputs.DROID_SPACES }}"
+          echo "Selected DS_LIMITS: ${{ github.event.inputs.DS_LIMITS }}"
           echo "Selected RE_KERNEL: ${{ github.event.inputs.RE_KERNEL }}"
           echo "Selected LZ4_UPDATE: ${{ github.event.inputs.LZ4_UPDATE }}"
           echo "Custom BUILD_TIME: $BUILD_TIME"
@@ -1265,6 +1296,23 @@ jobs:
             set_config "CONFIG_NETFILTER_XT_TARGET_REJECT=y"
             set_config "CONFIG_NETFILTER_XT_TARGET_LOG=y"
             set_config "CONFIG_NETFILTER_XT_MATCH_RECENT=y"
+
+            # 资源限制：--cpus / --pids-limit。
+            # 这两个会改动调度与 cgroup 结构体，进而改变大量导出符号的 CRC，
+            # 目录 `Documentation/Kernel-Configuration.md` 明确说明「无补丁可覆盖」：
+            # 开启后必须把 vendor_boot / vendor_dlkm / system_dlkm 里的模块
+            # 全部用同一份源码重编并一起刷入，否则原厂模块拒绝加载、开机重启。
+            # 所以默认关闭，用 DS_LIMITS 显式打开。
+            if [ "${{ github.event.inputs.DS_LIMITS }}" = "true" ]; then
+              echo "⚠️ DroidSpaces: 启用 CONFIG_CFS_BANDWIDTH / CONFIG_CGROUP_PIDS（--cpus / --pids-limit）"
+              echo "⚠️ 这两项会改 kABI，必须同时刷入重编的 vendor 模块，否则开机重启"
+              set_config "CONFIG_CFS_BANDWIDTH=y"
+              set_config "CONFIG_CGROUP_PIDS=y"
+            else
+              echo "ℹ️ DroidSpaces: 未启用 CONFIG_CFS_BANDWIDTH / CONFIG_CGROUP_PIDS"
+              echo "   → Requirements 的 cpu_limit、pids_limit 两项会显示 ✗（--cpus / --pids-limit 不可用）"
+              echo "   → 需要时把 DS_LIMITS 设为 true；开了必须同时刷 vendor 模块"
+            fi
           fi
 
           # IPSET & IPv6_NAT & TTL配置*
