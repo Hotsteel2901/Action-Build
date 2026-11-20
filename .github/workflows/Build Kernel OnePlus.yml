@@ -900,7 +900,14 @@ jobs:
           [[ -n "$MANUAL_HASH" ]] && echo "手动指定 hash: $MANUAL_HASH" || echo "手动指定 hash: 未启用"
 
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/${KSU_MANAGER_BRANCH}/kernel/setup.sh" | bash -s "$KSU_BUILTIN_BRANCH"
-          cd ./KernelSU
+          if [ -d common/drivers ]; then
+            DRV=common/drivers
+          else
+            DRV=drivers
+          fi
+          KSU_DIR=$(dirname "$(realpath "$DRV/kernelsu")")
+          echo "KSU_DIR=$KSU_DIR"
+          cd "$KSU_DIR"
 
           if [[ -n "$KSU_CUSTOM_TAG" ]]; then
             echo "KSU_CUSTOM_TAG=$KSU_CUSTOM_TAG" >> "$GITHUB_ENV"
@@ -912,11 +919,11 @@ jobs:
 
           KSU_VERSION=$(expr $(git rev-list --count "$KSU_MANAGER_BRANCH" 2>/dev/null || echo 13000) + 30700)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+
           if [ "$FAST_BUILD" = "false" ]; then
-            KSU_SRC="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/KernelSU/kernel"
-            if [[ -f "$KSU_SRC/Kbuild" ]]; then
-              sed -i 's/-dirty//g' "$KSU_SRC/Kbuild"
-              sed -i "s|^KSU_SRC :=.*|KSU_SRC := $KSU_SRC|" "$KSU_SRC/Kbuild"
+            if [ -f "$KSU_DIR/kernel/Kbuild" ]; then
+              sed -i 's/-dirty//g' "$KSU_DIR/kernel/Kbuild"
+              sed -i "s|^KSU_SRC :=.*|KSU_SRC := $KSU_DIR/kernel|" "$KSU_DIR/kernel/Kbuild"
             fi
           fi
 
@@ -946,7 +953,7 @@ jobs:
           if [ "${{ github.event.inputs.LZ4_UPDATE }}" = "true" ]; then
             git clone https://github.com/Numbersf/lz4_oplus.git
           fi
-          git clone https://github.com/ShirkNeko/SukiSU_patch.git
+          git clone https://github.com/SukiSU-Nova/SukiSU_patch.git
           cd kernel_platform
           if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
             echo "正在拉取susfs补丁"
