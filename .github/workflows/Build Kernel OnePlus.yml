@@ -119,7 +119,7 @@ on:
         type: string
         description: "管理器分支名(必填)/内置分支名(必填)/自定义版本标识(留空不修改)/回退分支提交哈希版本(留空不修改)//Manager Branch name (Required) / Builtin branch name (Required) / Custom version identifier (Leave blank to not modify) / Rollback branch commit hash version (Leave blank to not modify)"
         required: false
-        default: "main/builtin/Numbersf/"
+        default: "main/builtin-new/Numbersf/"
       LZ4_UPDATE:
         type: boolean
         description: "是否升级LZ4到上游最新？//Upgrade LZ4 to the latest upstream?"
@@ -232,7 +232,7 @@ jobs:
           mkdir kernel_workspace && cd kernel_workspace
 
           UPSTREAM_REPO="Numbersf/Action-Build"
-          UPSTREAM_BRANCH="SukiSU-Ultra"
+          UPSTREAM_BRANCH="SukiSU-Nova"
           SELF_REPO="${{ github.repository }}"
           SELF_BRANCH="${{ github.ref_name }}"
 
@@ -880,7 +880,7 @@ jobs:
             chmod +x "$f"
           done
 
-      - name: Add SukiSU Ultra
+      - name: Add SukiSU Nova
         run: |
           cd kernel_workspace/kernel_platform
           KSU_META="${{ github.event.inputs.KSU_META }}"
@@ -898,8 +898,15 @@ jobs:
           [[ -n "$KSU_CUSTOM_TAG" ]] && echo "自定义版本标识: $KSU_CUSTOM_TAG" || echo "自定义版本标识: 未启用"
           [[ -n "$MANUAL_HASH" ]] && echo "手动指定 hash: $MANUAL_HASH" || echo "手动指定 hash: 未启用"
 
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${KSU_MANAGER_BRANCH}/kernel/setup.sh" | bash -s "$KSU_BUILTIN_BRANCH"
-          cd ./KernelSU
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Nova/SukiSU-Nova/${KSU_MANAGER_BRANCH}/kernel/setup.sh" | bash -s "$KSU_BUILTIN_BRANCH"
+          if [ -d common/drivers ]; then
+            DRV=common/drivers
+          else
+            DRV=drivers
+          fi
+          KSU_DIR=$(dirname "$(realpath "$DRV/kernelsu")")
+          echo "KSU_DIR=$KSU_DIR"
+          cd "$KSU_DIR"
 
           # 如果指定了手动 hash，就切换到该提交
           if [[ -n "$MANUAL_HASH" ]]; then
@@ -908,11 +915,7 @@ jobs:
             SHORT_HASH=${MANUAL_HASH:0:8}
           fi
 
-          KSU_VERSION_TAG=$(curl -fsSL https://api.github.com/repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest \
-            | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')
-          if [[ -z "$KSU_VERSION_TAG" || "$(printf '%s\n' "$KSU_VERSION_TAG" "3.1.7" | sort -V | head -n1)" != "3.1.7" ]]; then
-            KSU_VERSION_TAG="3.1.7"
-          fi
+          KSU_VERSION_TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/SukiSU-Nova/SukiSU-Nova/releases/latest | sed -E 's#.*/tag/v?##' | grep -E '^[0-9]+(\.[0-9]+)*$' || true); KSU_VERSION_TAG=$(printf '%s\n' "$KSU_VERSION_TAG" "3.0.0" | sort -V | tail -n1)
           echo "KSU_VERSION_TAG=$KSU_VERSION_TAG" >> $GITHUB_ENV
 
           GIT_HASH=$(git rev-parse --short HEAD)
@@ -952,14 +955,14 @@ jobs:
             sed -i "s|^KSU_VERSION_API := .*|KSU_VERSION_API := $ESC_KSU_VERSION_TAG|" kernel/Makefile
           fi
 
-          KSU_VERSION=$(expr $(git rev-list --count "$KSU_MANAGER_BRANCH" 2>/dev/null || echo 13000) + 37185)
+          KSU_VERSION=$(expr $(git rev-list --count "$KSU_MANAGER_BRANCH" 2>/dev/null || echo 13000) + 30996)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
 
           echo "::group::最终 Makefile 中版本信息及部分调试结果预览"
           grep -nE '^(REPO_OWNER|REPO_NAME|REPO_BRANCH|KSU_VERSION_API|KSU_VERSION_FULL|VERSION_TAG|GIT_BIN|CURL_BIN)' kernel/Makefile
           echo "::endgroup::"
 
-      - name: Apply Patches SukiSU Ultra
+      - name: Apply Patches SukiSU Nova
         env:
           FILE: ${{ github.event.inputs.FILE }}
         run: |
@@ -985,7 +988,7 @@ jobs:
           if [ "${{ github.event.inputs.LZ4_UPDATE }}" = "true" ]; then
             git clone https://github.com/Numbersf/lz4_oplus.git
           fi
-          git clone https://github.com/ShirkNeko/SukiSU_patch.git
+          git clone https://github.com/SukiSU-Nova/SukiSU_patch.git
           cd kernel_platform
           if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
             echo "正在拉取susfs补丁"
@@ -1264,7 +1267,7 @@ jobs:
           }
           trap 'inject_fake_config' EXIT
 
-          # SukiSU Ultra配置
+          # SukiSU Nova配置
           set_config "CONFIG_KSU=y"
 
           # KPM配置
@@ -1749,7 +1752,7 @@ jobs:
           wget -O ksu_module_susfs_1.5.2+_Release.zip https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs_1.5.2+.zip
           cp ksu_module_susfs_1.5.2+_Release.zip ./AnyKernel3/
 
-      - name: Download Latest SukiSU-Ultra APK from CI
+      - name: Download Latest SukiSU-Nova APK from CI
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1759,13 +1762,13 @@ jobs:
           echo "Using branch: $KSU_MANAGER_BRANCH"
           echo "Downloading artifact: $MANAGER_ARTIFACT"
 
-          run_id=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/actions/workflows/build-manager.yml/runs?branch=$KSU_MANAGER_BRANCH&status=success&event=push&per_page=1" --jq '.workflow_runs[0].id' || echo "")
+          run_id=$(gh api "repos/SukiSU-Nova/SukiSU-Nova/actions/workflows/build-manager.yml/runs?branch=$KSU_MANAGER_BRANCH&status=success&event=push&per_page=1" --jq '.workflow_runs[0].id' || echo "")
 
           if [[ -z "$run_id" ]]; then
             echo "No successful workflow run found on branch $KSU_MANAGER_BRANCH. Skipping download."
             exit 0
           fi
-          artifact_url=$(gh api "repos/SukiSU-Ultra/SukiSU-Ultra/actions/runs/$run_id/artifacts" | jq -r ".artifacts[] | select(.name == \"$MANAGER_ARTIFACT\") | .archive_download_url" | head -n1)
+          artifact_url=$(gh api "repos/SukiSU-Nova/SukiSU-Nova/actions/runs/$run_id/artifacts" | jq -r ".artifacts[] | select(.name == \"$MANAGER_ARTIFACT\") | .archive_download_url" | head -n1)
 
           if [[ -z "$artifact_url" ]]; then
             echo "No artifact '$MANAGER_ARTIFACT' found in run $run_id. Skipping download."
@@ -1783,7 +1786,7 @@ jobs:
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v7
         with:
-          name: AnyKernel3_SukiSUUltra_${{ env.KSUVER }}_${{ steps.extract_info.outputs.value }}(${{ env.CKERNEL_VERSION }})${{ steps.suffix.outputs.value }}
+          name: AnyKernel3_SukiSUNova_${{ env.KSUVER }}_${{ steps.extract_info.outputs.value }}(${{ env.CKERNEL_VERSION }})${{ steps.suffix.outputs.value }}
           path: ./AnyKernel3/*
 
       - name: Extract and Process ZRAM Module

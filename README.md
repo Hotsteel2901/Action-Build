@@ -1,6 +1,6 @@
 **`简体中文`** | [English](README-en.md)
  
-[![Workflow Status](https://img.shields.io/github/actions/workflow/status/Numbersf/Action-Build/Build%20Kernel%20OnePlus.yml?branch=SukiSU-Ultra&label=remote%20build&logo=github-actions&style=flat-square)](https://github.com/Numbersf/Action-Build/actions/workflows/Build%20Kernel%20OnePlus.yml?query=branch%3ASukiSU-Ultra) ![Downloads](https://img.shields.io/github/downloads/Numbersf/Action-Build/total)
+[![Workflow Status](https://img.shields.io/github/actions/workflow/status/Numbersf/Action-Build/Build%20Kernel%20OnePlus.yml?branch=SukiSU-Nova&label=remote%20build&logo=github-actions&style=flat-square)](https://github.com/Numbersf/Action-Build/actions/workflows/Build%20Kernel%20OnePlus.yml?query=branch%3ASukiSU-Nova) ![Downloads](https://img.shields.io/github/downloads/Numbersf/Action-Build/total)
  
 [![Kernel Manifest](https://img.shields.io/badge/Kernel%20Manifest-EB0029?logo=oneplus&logoColor=white&style=flat-square)](https://github.com/OnePlusOSS/kernel_manifest) [![Dynamic Kernel Manifest](https://img.shields.io/badge/Dynamic%20Kernel%20Manifest-EB0029?logo=oneplus&logoColor=white&style=flat-square)](https://github.com/Numbersf/kernel_manifest) [![Kernel Manifest Appendix](https://img.shields.io/badge/Kernel%20Manifest%20Appendix-EB0029?logo=oneplus&logoColor=white&style=flat-square)](https://github.com/Numbersf/Kernel_Manifest_Appendix) [![Fengchi Kernel](https://img.shields.io/badge/Fengchi%20Kernel-EB0029?logo=github&logoColor=white&style=flat-square)](https://github.com/Numbersf/SCHED_PATCH)
  
@@ -16,16 +16,16 @@
 <details>
 <summary><strong>点击查看如何fork项目</strong></summary>
 <p>
-  <img src="https://github.com/Numbersf/Action-Build/blob/SukiSU-Ultra/pic/start.gif" width="500"/>
-  <img src="https://github.com/Numbersf/Action-Build/blob/SukiSU-Ultra/pic/start(2).png" width="500"/>
+  <img src="https://github.com/Numbersf/Action-Build/blob/SukiSU-Nova/pic/start.gif" width="500"/>
+  <img src="https://github.com/Numbersf/Action-Build/blob/SukiSU-Nova/pic/start(2).png" width="500"/>
 </p>
-<summary>请注意，如果你想使用其他分支管理器项目，请在fork时关闭“仅复制SukiSU-Ultra分支”</summary>
+<summary>请注意，如果你想使用其他分支管理器项目，请在fork时关闭“仅复制SukiSU-Nova分支”</summary>
 </details>
  
 <details>
 <summary><strong>点击查看如何同步fork后的项目到最新</strong></summary>
 <p>
-  <img src="https://github.com/Numbersf/Action-Build/blob/SukiSU-Ultra/pic/syncfork.png" width="500"/>
+  <img src="https://github.com/Numbersf/Action-Build/blob/SukiSU-Nova/pic/syncfork.png" width="500"/>
 </p>
 <summary>请及时同步!某些更新可能会导致旧版失效报错!如果同步后依旧运行失败请删除并重新fork!完成以上步骤后仍有问题再反馈提交issue</summary>
 </details>
@@ -74,7 +74,7 @@
  
 ------
 > [!CAUTION]
->请不要在**保``root``更新**时音量下安装模块请使用音量上跳过!现在也基本上不需要安装了,使用``SukiSU Ultra附加模块``即可  
+>请不要在**保``root``更新**时音量下安装模块请使用音量上跳过!现在也基本上不需要安装了,使用``SukiSU Nova附加模块``即可  
 >
 >如果你开启了``ZRAM``算法,请在刷入``Anykernel3``重启**前**安装``ZRAM``模块,部分参数请自行调整。另外``5.10``内核暂不支持开启``ZRAM``算法,因为没有找到``zram.ko``路径,但是生成的``Anykernel3``依旧可用  
 >
@@ -133,7 +133,7 @@ set_hide_config "CONFIG_IP6_NF_NAT=y"
  
 - 支持设置分支、自定义版本标识、修改对应分支的提交哈希来进行回退  
 ```
-设置分支:分为管理器层和内置层,请按照SukiSU Ultra仓库频道名进行修改,非开发者禁止修改,不可留空、删除
+设置分支:分为管理器层和内置层,请按照SukiSU Nova仓库频道名进行修改,非开发者禁止修改,不可留空、删除
 自定义版本标识:
 将原先的提交hash改成自定义内容,再将提交hash放在最后 这个可以随意改,不要太长
 这里指的提交hash是内置层
@@ -180,9 +180,9 @@ https://github.com/你的用户名(username)/你的仓库名/actions/caches
  
 - 从写入 `Anykernel3.zip` 的配置文件后缀中删除潜在的版本代码,替换成精确的 `Android` 版本号`XX.X.(X)`
 ```
-AnyKernel3_SukiSUUltra_34895_OnePlusAce2Pro_Android16.0.0(5.15.180)_KPM_BBG_ILH_DS_REKER.zip
-AnyKernel3_SukiSUUltra_34895_OnePlus11_Android14.1.0(5.15.123)_KPM_BBG_ILH_DS_REKER.zip
-AnyKernel3_SukiSUUltra_34895_OnePlus15(AOSP)_Android16.0.0(6.12.23)_KPM_BBG_ILH_DS_REKER.zip
+AnyKernel3_SukiSUNova_34895_OnePlusAce2Pro_Android16.0.0(5.15.180)_KPM_BBG_ILH_DS_REKER.zip
+AnyKernel3_SukiSUNova_34895_OnePlus11_Android14.1.0(5.15.123)_KPM_BBG_ILH_DS_REKER.zip
+AnyKernel3_SukiSUNova_34895_OnePlus15(AOSP)_Android16.0.0(6.12.23)_KPM_BBG_ILH_DS_REKER.zip
 ```  
  
 - 添加 `zram` 模块的 `LZ4K、LZ4KD` 压缩算法支持[@ShirkNeko](https://github.com/ShirkNeko)  
