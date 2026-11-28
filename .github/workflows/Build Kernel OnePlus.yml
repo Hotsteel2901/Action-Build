@@ -408,11 +408,22 @@ jobs:
 
       - name: Create and Enable 3G Swap
         run: |
+          CUR_SWAP_MB=$(free -m | awk '/^Swap:/{print $2}')
+          if [ "${CUR_SWAP_MB:-0}" -ge 3000 ]; then
+            echo "✅ Swap 已就绪（${CUR_SWAP_MB} MiB），跳过重建"
+            free -h
+            exit 0
+          fi
           sudo swapoff -a
-          sudo fallocate -l 3G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          SWAP_PATH="/swapfile"
+          ROOT_AVAIL_MB=$(df -BM --output=avail / | tail -1 | tr -dc '0-9')
+          if [ "${ROOT_AVAIL_MB:-0}" -lt 3584 ] && [ -d "${GITHUB_WORKSPACE:-}" ]; then
+            SWAP_PATH="${GITHUB_WORKSPACE}/.swapfile"
+          fi
+          sudo fallocate -l 3G "$SWAP_PATH"
+          sudo chmod 600 "$SWAP_PATH"
+          sudo mkswap "$SWAP_PATH"
+          sudo swapon "$SWAP_PATH"
           free -h
 
       - name: Set Cache Environment
