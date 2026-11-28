@@ -159,6 +159,11 @@ on:
         description: "是否启用网络拥塞控制与管理机制(BBRv1+BBRv3+ECN)？//Enable network congestion control and management mechanism (BBRv1+BBRv3+ECN)?"
         required: true
         default: true
+      NOMOUNT:
+        type: boolean
+        description: "是否添加NoMount挂载元模块？//Add NoMount metamodule?"
+        required: true
+        default: false
       UNICODE_BYPASS:
         type: boolean
         description: "是否添加Unicode不可见字码点绕过读取漏洞修复？//Add patch for Unicode invisible code point read bypass vulnerability?"
@@ -390,6 +395,7 @@ jobs:
           echo "Selected LSM_BBG: ${{ github.event.inputs.LSM_BBG }}"
           echo "Selected NETFILTER: ${{ github.event.inputs.NETFILTER }}"
           echo "Selected CCM: ${{ github.event.inputs.CCM }}"
+          echo "Selected NOMOUNT: ${{ github.event.inputs.NOMOUNT }}"
           echo "Selected SUSFS_DEV: ${{ github.event.inputs.SUSFS_DEV }}"
           echo "Selected FAST_BUILD: ${{ github.event.inputs.FAST_BUILD }}"
           echo "Selected SCHED_HMBIRD: ${{ github.event.inputs.SCHED_HMBIRD }}"
@@ -459,8 +465,8 @@ jobs:
 
       - name: Setup Ccache-ECS
         run: |
-         LIB_DIR="${GITHUB_WORKSPACE}/kernel_workspace/Action-Build/lib"
-         sudo cp -f "$LIB_DIR/ccache" /usr/bin/ccache && sudo chmod +x /usr/bin/ccache
+          LIB_DIR="${GITHUB_WORKSPACE}/kernel_workspace/Action-Build/lib"
+          sudo cp -f "$LIB_DIR/ccache" /usr/bin/ccache && sudo chmod +x /usr/bin/ccache
 
       - name: Restore Ccache
         if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' }}
@@ -905,7 +911,7 @@ jobs:
             DRV=drivers
           fi
           KSU_DIR=$(dirname "$(realpath "$DRV/kernelsu")")
-          echo "KSU_DIR=$KSU_DIR"
+          echo "KSU_DIR=$KSU_DIR" >> "$GITHUB_ENV"
           cd "$KSU_DIR"
 
           # 如果指定了手动 hash，就切换到该提交
@@ -1008,7 +1014,7 @@ jobs:
           cd ./common
 
           if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
-            kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsCompat.kts" apply "$PWD"
+            kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsCompat.kts" apply "$PWD" || echo "::warning::SusfsCompat apply 失败"
           fi
 
           if [ "$KMI" == "android13-5.15" ] && [ "$SUBLEVEL" -lt 123 ]; then
@@ -1022,15 +1028,12 @@ jobs:
             echo "正在打susfs补丁"
             kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsContext.kts" "$PWD" "$PWD/50_add_susfs_in_gki-${{ env.KANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch"
             patch -p1 < 50_add_susfs_in_gki-${{ env.KANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
+            kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsCompat.kts" postfix "$PWD" || echo "::warning::SusfsCompat postfix 失败"
+            kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsCompat.kts" revert "$PWD" || echo "::warning::SusfsCompat revert 失败"
             echo "susfs_patch完成"
           fi
           source $REJ_CHECKER
           check_rejects .
-
-          if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
-            kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsCompat.kts" postfix "$PWD"
-            kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsCompat.kts" revert "$PWD"
-          fi
 
       # OGKI转换GKI，无需修改 dtbo 开机
       - name: Apply Convert HMBIRD_OGKI to HMBIRD_GKI
@@ -1222,134 +1225,105 @@ jobs:
           curl -LSs https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh | bash
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' ./security/Kconfig
 
+      - name: Apply NOMOUNT
+        if: ${{ github.event.inputs.NOMOUNT == 'true' }}
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          echo "正在启用NOMOUNT元模块支持…"
+          curl -LSs https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -s dev
+
       # 配置信息，带*为附加项目，具有一定危险性和不确定性
       - name: Add Configuration Settings
         run: |
           cd kernel_workspace/kernel_platform/common
           CONFIG_FILE=./arch/arm64/configs/gki_defconfig
           MAKEFILE=./kernel/Makefile
-
-          declare -a HIDE_CONFIGS=()
-
-          set_config() {
-            local val="$1"
-            local key="${val%%=*}"
-            if grep -qF "${key}=" "$CONFIG_FILE" || grep -qF "# ${key} is not set" "$CONFIG_FILE"; then
-              VAL="$val" awk -v key="$key" '
-                $0 == "# " key " is not set" || index($0, key "=") == 1 { print ENVIRON["VAL"]; next }
-                { print }
-              ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE" || rm -f "${CONFIG_FILE}.tmp"
-            else
-              printf '%s\n' "$val" >> "$CONFIG_FILE"
-            fi
-          }
-
-          set_hide_config() {
-            local val="$1"
-            local key="${val%%=*}"
-            set_config "$val"
-            HIDE_CONFIGS+=("$key")
-          }
-
-          inject_fake_config() {
-            [ "${#HIDE_CONFIGS[@]}" -eq 0 ] && return 0
-            local marker="# --- fake_config injector ---"
-            if ! grep -qF "$marker" "$MAKEFILE"; then
-              {
-                printf '\n%s\n' "$marker"
-                printf 'ifneq ($(strip $(CONFIG_FAKE_DISABLE)),)\n'
-                printf '$(obj)/config_data: $(KCONFIG_CONFIG) FORCE\n'
-                printf '\t$(Q)sed $(foreach opt,$(CONFIG_FAKE_DISABLE),-e '"'"'s|^$(opt)=.*|# $(opt) is not set|'"'"') $(KCONFIG_CONFIG) > $@\n'
-                printf 'endif\n'
-              } >> "$MAKEFILE"
-            fi
-            echo "CONFIG_FAKE_DISABLE=${HIDE_CONFIGS[*]}" >> "$GITHUB_ENV"
-          }
-          trap 'inject_fake_config' EXIT
+          source "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/defconfig_utils.sh"
+          trap 'kcfg_inject_fake' EXIT
 
           # SukiSU Nova配置
-          set_config "CONFIG_KSU=y"
+          kcfg_set "CONFIG_KSU=y"
 
           # KPM配置
           if [ "${{ github.event.inputs.KPM }}" = "KPM" ] || [ "${{ github.event.inputs.KPM }}" = "N/A" ]; then
-            set_config "CONFIG_KPM=y"
+            kcfg_set "CONFIG_KPM=y"
           fi
           if [ "${{ github.event.inputs.KPM }}" = "KPN" ]; then
-            set_config "CONFIG_KPM=n"
+            kcfg_set "CONFIG_KPM=n"
           fi
 
           # SUSFS配置
           if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
-            set_config "CONFIG_KSU_SUSFS=y"
-            set_config "CONFIG_KSU_SUSFS_SUS_PATH=y"
-            set_config "CONFIG_KSU_SUSFS_SUS_MAP=y"
-            set_config "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
-            set_config "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-            set_config "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-            set_config "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-            set_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
-            set_config "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
-            set_config "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+            kcfg_set "CONFIG_KSU_SUSFS=y"
+            kcfg_set "CONFIG_KSU_SUSFS_SUS_PATH=y"
+            kcfg_set "CONFIG_KSU_SUSFS_SUS_MAP=y"
+            kcfg_set "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+            kcfg_set "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+            kcfg_set "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+            kcfg_set "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+            kcfg_set "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+            kcfg_set "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+            kcfg_set "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
           else
-            set_config "CONFIG_KSU_SUSFS=n"
+            kcfg_set "CONFIG_KSU_SUSFS=n"
           fi
 
           # TMPFS配置*
-          set_config "CONFIG_TMPFS_XATTR=y"
-          set_config "CONFIG_TMPFS_POSIX_ACL=y"
+          kcfg_set "CONFIG_TMPFS_XATTR=y"
+          kcfg_set "CONFIG_TMPFS_POSIX_ACL=y"
 
           # BBR & ECN配置*
           if [ "${{ github.event.inputs.CCM }}" = "true" ]; then
-            set_hide_config "CONFIG_TCP_CONG_ADVANCED=y"
-            set_config "CONFIG_TCP_CONG_BBR=y"
+            kcfg_set_hidden "CONFIG_TCP_CONG_ADVANCED=y"
+            kcfg_set "CONFIG_TCP_CONG_BBR=y"
             if [ "$KMI" != "android16-6.12" ]; then
-              set_config "CONFIG_TCP_CONG_BBR3=y"
+              kcfg_set "CONFIG_TCP_CONG_BBR3=y"
             fi
-            set_config "CONFIG_NET_SCH_FQ=y"
-            set_config "CONFIG_TCP_CONG_BIC=n"
-            set_config "CONFIG_TCP_CONG_WESTWOOD=n"
-            set_config "CONFIG_TCP_CONG_HTCP=n"
-            set_config "CONFIG_IP_ECN=y"
-            set_config "CONFIG_TCP_ECN=y"
-            set_config "CONFIG_IPV6_ECN=y"
-            set_config "CONFIG_IP_NF_TARGET_ECN=y"
+            kcfg_set "CONFIG_NET_SCH_FQ=y"
+            kcfg_set "CONFIG_TCP_CONG_BIC=n"
+            kcfg_set "CONFIG_TCP_CONG_WESTWOOD=n"
+            kcfg_set "CONFIG_TCP_CONG_HTCP=n"
+            kcfg_set "CONFIG_IP_ECN=y"
+            kcfg_set "CONFIG_TCP_ECN=y"
+            kcfg_set "CONFIG_IPV6_ECN=y"
+            kcfg_set "CONFIG_IP_NF_TARGET_ECN=y"
           fi
 
           # Re-Kernel配置*
           if [ "${{ github.event.inputs.RE_KERNEL }}" = "true" ]; then
-            set_config "CONFIG_REKERNEL=y"
-            set_config "CONFIG_REKERNEL_NETWORK=y"
+            kcfg_set "CONFIG_REKERNEL=y"
+            kcfg_set "CONFIG_REKERNEL_NETWORK=y"
           fi
 
           # ZRAM配置*
           if [[ "${{ github.event.inputs.ZRAM }}" == 1* ]]; then
-            set_config "CONFIG_CRYPTO_LZ4HC=y"
-            set_config "CONFIG_CRYPTO_LZ4K=y"
-            set_config "CONFIG_CRYPTO_LZ4KD=y"
-            set_config "CONFIG_CRYPTO_842=y"
-            set_config "CONFIG_CRYPTO_LZ4K_OPLUS=y"
-            set_config "CONFIG_ZRAM_WRITEBACK=y"
+            kcfg_set "CONFIG_CRYPTO_LZ4HC=y"
+            kcfg_set "CONFIG_CRYPTO_LZ4K=y"
+            kcfg_set "CONFIG_CRYPTO_LZ4KD=y"
+            kcfg_set "CONFIG_CRYPTO_842=y"
+            kcfg_set "CONFIG_CRYPTO_LZ4K_OPLUS=y"
+            kcfg_set "CONFIG_ZRAM_WRITEBACK=y"
           fi
 
           # LSM配置*
           if [ "${{ github.event.inputs.LSM_BBG }}" = "true" ]; then
-            set_config "CONFIG_BBG=y"
+            kcfg_set "CONFIG_BBG=y"
           fi
 
           # DROID_SPACES配置*
           if [ "${{ github.event.inputs.DROID_SPACES }}" = "true" ]; then
-            set_config "CONFIG_NTSYNC=y"
-            set_config "CONFIG_MACVLAN=y"
-            set_config "CONFIG_SYSVIPC=y"
-            set_config "CONFIG_DEVTMPFS=y"
-            set_config "CONFIG_PID_NS=y"
-            set_config "CONFIG_IPC_NS=y"
-            set_config "CONFIG_USER_NS=y"
-            set_config "CONFIG_NAMESPACES=y"
-            set_config "CONFIG_POSIX_MQUEUE=y"
-            set_config "CONFIG_NETFILTER_XT_TARGET_REJECT=y"
-            set_config "CONFIG_NETFILTER_XT_TARGET_LOG=y"
-            set_config "CONFIG_NETFILTER_XT_MATCH_RECENT=y"
+            kcfg_set "CONFIG_NTSYNC=y"
+            kcfg_set "CONFIG_MACVLAN=y"
+            kcfg_set "CONFIG_SYSVIPC=y"
+            kcfg_set "CONFIG_DEVTMPFS=y"
+            kcfg_set "CONFIG_PID_NS=y"
+            kcfg_set "CONFIG_IPC_NS=y"
+            kcfg_set "CONFIG_USER_NS=y"
+            kcfg_set "CONFIG_NAMESPACES=y"
+            kcfg_set "CONFIG_POSIX_MQUEUE=y"
+            kcfg_set "CONFIG_NETFILTER_XT_TARGET_REJECT=y"
+            kcfg_set "CONFIG_NETFILTER_XT_TARGET_LOG=y"
+            kcfg_set "CONFIG_NETFILTER_XT_MATCH_RECENT=y"
 
             # 资源限制：--cpus / --pids-limit。
             # 这两个会改动调度与 cgroup 结构体，进而改变大量导出符号的 CRC，
@@ -1360,8 +1334,8 @@ jobs:
             if [ "${{ github.event.inputs.DS_LIMITS }}" = "true" ]; then
               echo "⚠️ DroidSpaces: 启用 CONFIG_CFS_BANDWIDTH / CONFIG_CGROUP_PIDS（--cpus / --pids-limit）"
               echo "⚠️ 这两项会改 kABI，必须同时刷入重编的 vendor 模块，否则开机重启"
-              set_config "CONFIG_CFS_BANDWIDTH=y"
-              set_config "CONFIG_CGROUP_PIDS=y"
+              kcfg_set "CONFIG_CFS_BANDWIDTH=y"
+              kcfg_set "CONFIG_CGROUP_PIDS=y"
             else
               echo "ℹ️ DroidSpaces: 未启用 CONFIG_CFS_BANDWIDTH / CONFIG_CGROUP_PIDS"
               echo "   → Requirements 的 cpu_limit、pids_limit 两项会显示 ✗（--cpus / --pids-limit 不可用）"
@@ -1372,51 +1346,56 @@ jobs:
           # IPSET & IPv6_NAT & TTL配置*
           if [ "${{ github.event.inputs.NETFILTER }}" = "true" ]; then
             if [[ "$KERNEL_VERSION" != "6.12" && "${CPU}" != mt* ]]; then
-              set_config "CONFIG_BPF_STREAM_PARSER=y"
+              kcfg_set "CONFIG_BPF_STREAM_PARSER=y"
             fi
-            set_config "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y"
-            set_config "CONFIG_NETFILTER_XT_SET=y"
-            set_config "CONFIG_IP_SET=y"
-            set_config "CONFIG_IP_SET_MAX=65534"
-            set_config "CONFIG_IP_SET_BITMAP_IP=y"
-            set_config "CONFIG_IP_SET_BITMAP_IPMAC=y"
-            set_config "CONFIG_IP_SET_BITMAP_PORT=y"
-            set_config "CONFIG_IP_SET_HASH_IP=y"
-            set_config "CONFIG_IP_SET_HASH_IPMARK=y"
-            set_config "CONFIG_IP_SET_HASH_IPPORT=y"
-            set_config "CONFIG_IP_SET_HASH_IPPORTIP=y"
-            set_config "CONFIG_IP_SET_HASH_IPPORTNET=y"
-            set_config "CONFIG_IP_SET_HASH_IPMAC=y"
-            set_config "CONFIG_IP_SET_HASH_MAC=y"
-            set_config "CONFIG_IP_SET_HASH_NETPORTNET=y"
-            set_config "CONFIG_IP_SET_HASH_NET=y"
-            set_config "CONFIG_IP_SET_HASH_NETNET=y"
-            set_config "CONFIG_IP_SET_HASH_NETPORT=y"
-            set_config "CONFIG_IP_SET_HASH_NETIFACE=y"
-            set_config "CONFIG_IP_SET_LIST_SET=y"
-            set_hide_config "CONFIG_IP6_NF_NAT=y"
-            set_config "CONFIG_IP6_NF_TARGET_MASQUERADE=y"
-            set_config "CONFIG_NETFILTER_XT_TARGET_HL=y"
-            set_config "CONFIG_IP_NF_TARGET_TTL=y"
-            set_config "CONFIG_IP6_NF_TARGET_HL=y"
-            set_config "CONFIG_NETFILTER_XT_MATCH_HL=y"
-            set_config "CONFIG_IP_NF_MATCH_TTL=y"
-            set_config "CONFIG_IP6_NF_MATCH_HL=y"
-            set_config "CONFIG_IP_NF_MANGLE=y"
-            set_config "CONFIG_IP6_NF_MANGLE=y"
+            kcfg_set "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y"
+            kcfg_set "CONFIG_NETFILTER_XT_SET=y"
+            kcfg_set "CONFIG_IP_SET=y"
+            kcfg_set "CONFIG_IP_SET_MAX=65534"
+            kcfg_set "CONFIG_IP_SET_BITMAP_IP=y"
+            kcfg_set "CONFIG_IP_SET_BITMAP_IPMAC=y"
+            kcfg_set "CONFIG_IP_SET_BITMAP_PORT=y"
+            kcfg_set "CONFIG_IP_SET_HASH_IP=y"
+            kcfg_set "CONFIG_IP_SET_HASH_IPMARK=y"
+            kcfg_set "CONFIG_IP_SET_HASH_IPPORT=y"
+            kcfg_set "CONFIG_IP_SET_HASH_IPPORTIP=y"
+            kcfg_set "CONFIG_IP_SET_HASH_IPPORTNET=y"
+            kcfg_set "CONFIG_IP_SET_HASH_IPMAC=y"
+            kcfg_set "CONFIG_IP_SET_HASH_MAC=y"
+            kcfg_set "CONFIG_IP_SET_HASH_NETPORTNET=y"
+            kcfg_set "CONFIG_IP_SET_HASH_NET=y"
+            kcfg_set "CONFIG_IP_SET_HASH_NETNET=y"
+            kcfg_set "CONFIG_IP_SET_HASH_NETPORT=y"
+            kcfg_set "CONFIG_IP_SET_HASH_NETIFACE=y"
+            kcfg_set "CONFIG_IP_SET_LIST_SET=y"
+            kcfg_set_hidden "CONFIG_IP6_NF_NAT=y"
+            kcfg_set "CONFIG_IP6_NF_TARGET_MASQUERADE=y"
+            kcfg_set "CONFIG_NETFILTER_XT_TARGET_HL=y"
+            kcfg_set "CONFIG_IP_NF_TARGET_TTL=y"
+            kcfg_set "CONFIG_IP6_NF_TARGET_HL=y"
+            kcfg_set "CONFIG_NETFILTER_XT_MATCH_HL=y"
+            kcfg_set "CONFIG_IP_NF_MATCH_TTL=y"
+            kcfg_set "CONFIG_IP6_NF_MATCH_HL=y"
+            kcfg_set "CONFIG_IP_NF_MANGLE=y"
+            kcfg_set "CONFIG_IP6_NF_MANGLE=y"
+          fi
+
+          # NoMount配置*
+          if [ "${{ github.event.inputs.NOMOUNT }}" = "true" ]; then
+            kcfg_set "CONFIG_NOMOUNT=y"
           fi
 
           # 构建依赖项调整及优化
           if [ "$KERNEL_VERSION" = "5.15" ] && [[ "$CPU" == mt* ]]; then
-            set_config "CONFIG_OPLUS_SYSTEM_KERNEL=y"
-            set_config "CONFIG_OPLUS_FEATURE_CMDLINE=m"
-            set_config "CONFIG_OPLUS_FEATURE_OPLUSBOOT=m"
-            set_config "CONFIG_OPLUS_FEATURE_BUILDVARIANT=m"
-            set_config "CONFIG_OPLUS_FEATURE_OPROJECT=m"
+            kcfg_set "CONFIG_OPLUS_SYSTEM_KERNEL=y"
+            kcfg_set "CONFIG_OPLUS_FEATURE_CMDLINE=m"
+            kcfg_set "CONFIG_OPLUS_FEATURE_OPLUSBOOT=m"
+            kcfg_set "CONFIG_OPLUS_FEATURE_BUILDVARIANT=m"
+            kcfg_set "CONFIG_OPLUS_FEATURE_OPROJECT=m"
           fi
           if [[ "$ENABLE_RUST" == "true" ]]; then
-            set_config "CONFIG_RUST=y"
-            set_config "CONFIG_ANDROID_BINDER_IPC_RUST=m"
+            kcfg_set "CONFIG_RUST=y"
+            kcfg_set "CONFIG_ANDROID_BINDER_IPC_RUST=m"
           fi
 
       # Custom kernel build time, without adding #1 SMP PREEMPT 自定义内核构建时间，不要加入#1 SMP PREEMPT
@@ -1535,7 +1514,7 @@ jobs:
           elif [[ -d "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/clang-${CLANG_VERSION}/lib" ]]; then
             export LIBCLANG_PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/clang-${CLANG_VERSION}/lib"
           else
-            export LIBCLANG_PATH="$(clang --print-resource-dir 2>/dev/null | sed 's|/lib/clang/.*||')/lib" 
+            export LIBCLANG_PATH="$(clang --print-resource-dir 2>/dev/null | sed 's|/lib/clang/.*||')/lib"
             echo "⚠️ LIBCLANG_PATH fallback to system: $LIBCLANG_PATH"
           fi
           echo "✅ LIBCLANG_PATH=$LIBCLANG_PATH"
@@ -1641,7 +1620,7 @@ jobs:
           if [[ -n "$LD_WRAPPER" ]]; then
             MAKE_ARGS+=(LD="$LD_WRAPPER")
           else
-            MAKE_ARGS+=(LD=ld.lld)     
+            MAKE_ARGS+=(LD=ld.lld)
           fi
           if [[ "$USE_LLVM_IAS" == "true" ]]; then
             MAKE_ARGS+=(LLVM_IAS=1)
@@ -1673,8 +1652,7 @@ jobs:
             ./kernel_platform/oplus/bazel/oplus_modules_variant.sh ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
             ./kernel_platform/build_with_bazel.py -t ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
           else
-            LTO=thin SYSTEM_DLKM_RE_SIGN=0 BUILD_SYSTEM_DLKM=0 KMI_SYMBOL_LIST_STRICT_MODE=0 \
-            ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
+            LTO=thin SYSTEM_DLKM_RE_SIGN=0 BUILD_SYSTEM_DLKM=0 KMI_SYMBOL_LIST_STRICT_MODE=0 ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
           fi
 
       - name: Make AnyKernel3
@@ -1729,14 +1707,11 @@ jobs:
         if: ${{ github.event.inputs.SUSFS_CI == 'CI' && github.event.inputs.SUSFS_META != '-1' }}
         continue-on-error: true
         run: |
-          LATEST_RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs?status=success&event=push" | \
-            jq -r '.workflow_runs[] | select(.head_branch == "v1.5.2+") | .id' | head -n 1)
+          LATEST_RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs?status=success&event=push" | jq -r '.workflow_runs[] | select(.head_branch == "v1.5.2+") | .id' | head -n 1)
           if [ -z "$LATEST_RUN_ID" ]; then
             echo "No successful run found for branch v1.5.2+"
           else
-            ARTIFACT_URL=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_RUN_ID/artifacts" | jq -r '.artifacts[0].archive_download_url')
+            ARTIFACT_URL=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_RUN_ID/artifacts" | jq -r '.artifacts[0].archive_download_url')
             if [ -n "$ARTIFACT_URL" ]; then
               curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -o ksu_module_susfs_1.5.2+_CI.zip "$ARTIFACT_URL"
               cp ksu_module_susfs_1.5.2+_CI.zip ./AnyKernel3/
