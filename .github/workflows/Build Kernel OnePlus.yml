@@ -105,11 +105,6 @@ on:
           - "16.0.1.301"
           - "off"
           - "latest"
-      PIN_ACE3PRO:
-        type: boolean
-        description: "启用 Ace 3 Pro 源码锚定（取消勾选=跟随上游分支头）//Enable Ace 3 Pro source pinning"
-        required: false
-        default: true
       BUILD_TIME:
         type: string
         description: "自定义构建时间(输入F使用UTCT或-1关闭)//Custom build time (Enter F to use UTCT, or -1 to disable)"
@@ -530,17 +525,11 @@ jobs:
           # 之前用 "${PIN_LABEL:-默认值}" 会导致无论选哪一档都锚定到默认版本。
           PIN_LABEL="${{ github.event.inputs.ACE3PRO_PIN }}"
           PIN_LABEL="${PIN_LABEL:-16.0.5.701}"
-          PIN_ENABLE="${{ github.event.inputs.PIN_ACE3PRO }}"
-          PIN_ENABLE="${PIN_ENABLE:-true}"
           {
             echo "PIN_LABEL=$PIN_LABEL"
-            echo "PIN_ENABLE=$PIN_ENABLE"
             echo "PIN_MODE=pending"
           } >> "$GITHUB_ENV"
-          if [ "$PIN_ENABLE" = "false" ] || [ "$PIN_ENABLE" = "0" ]; then
-            echo "⏸️ PIN_ACE3PRO=$PIN_ENABLE：本次关闭源码锚定，跟随上游分支头"
-            echo "PIN_MODE=off" >> "$GITHUB_ENV"
-          elif [ "$PIN_LABEL" = "off" ] || [ "$PIN_LABEL" = "latest" ]; then
+          if [ "$PIN_LABEL" = "off" ] || [ "$PIN_LABEL" = "latest" ]; then
             echo "⏸️ ACE3PRO_PIN=$PIN_LABEL：本次不锚定，跟随上游分支头"
             echo "PIN_MODE=off" >> "$GITHUB_ENV"
           elif [ "$FILE" != "oneplus_ace3_pro_b" ]; then
@@ -657,13 +646,12 @@ jobs:
         if: ${{ startsWith(github.event.inputs.FILE, 'oneplus_ace3_pro') }}
         env:
           FILE: ${{ github.event.inputs.FILE }}
-          PIN_ACE3PRO: ${{ github.event.inputs.PIN_ACE3PRO }}
           ACE3PRO_PIN: ${{ github.event.inputs.ACE3PRO_PIN }}
         run: |
           cd kernel_workspace
           MODE="${PIN_MODE:-}"
           DESIRED="${PIN_LABEL:-${ACE3PRO_PIN:-16.0.5.701}}"
-          echo "🔎 锚定状态: FILE=$FILE  PIN_ACE3PRO=${PIN_ACE3PRO:-true}  ACE3PRO_PIN=${ACE3PRO_PIN:-16.0.5.701}  PIN_MODE=${MODE:-<未写入>}"
+          echo "🔎 锚定状态: FILE=$FILE  ACE3PRO_PIN=${ACE3PRO_PIN:-16.0.5.701}  PIN_MODE=${MODE:-<未写入>}"
 
           if [ "$MODE" = "off" ]; then
             echo "⏸️ 本次已关闭源码锚定（PIN_MODE=off），跟随上游分支头，跳过校验"
@@ -674,7 +662,7 @@ jobs:
           if [ "$MODE" != "pinned" ]; then
             if [ "$FILE" = "oneplus_ace3_pro_b" ]; then
               echo "❌ 期望锚定到 $DESIRED，但 PIN_MODE=${MODE:-<未写入>}：锚定步骤没有生效"
-              echo "   确实想跟随上游分支头，请取消勾选 PIN_ACE3PRO 或把 ACE3PRO_PIN 选 off"
+              echo "   确实想跟随上游分支头，请把 ACE3PRO_PIN 选 off 或 latest"
               exit 16
             fi
             echo "ℹ️ $FILE 不是 oneplus_ace3_pro_b（锚定只覆盖 _b），跳过校验"
